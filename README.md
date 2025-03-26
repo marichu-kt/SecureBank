@@ -10,6 +10,11 @@
 | Nombre Completo   | Usuario GitHub            | Rol en el Proyecto                          |
 |--------------------|----------------------------|----------------------------------------------|
 | Mario Martínez     | [@marichu-kt](https://github.com/marichu-kt) | Desarrollador |
+
+| Nombre Completo   | Usuario GitHub            | Rol en el Proyecto          |
+|-------------------|---------------------------|------------------------------|
+| ![marichu-kt](https://github.com/marichu-kt.png?size=20) Mario Martínez | [@marichu-kt](https://github.com/marichu-kt) | Desarrollador              |
+
 ---
 
 ## Índice de Contenidos
