@@ -15,6 +15,11 @@
 |-------------------|---------------------------|------------------------------|
 | ![marichu-kt](https://github.com/marichu-kt.png?size=20) Mario Martínez | [@marichu-kt](https://github.com/marichu-kt) | Desarrollador              |
 
+| Nombre Completo                                                                 | Usuario GitHub                                     | Rol en el Proyecto                 |
+|----------------------------------------------------------------------------------|----------------------------------------------------|------------------------------------|
+| <img src="https://github.com/marichu-kt.png" width="24"/> Mario Martínez        | [@marichu-kt](https://github.com/marichu-kt) | Monitor de anomalías y validación |
+
+
 ---
 
 ## Índice de Contenidos
