@@ -11,8 +11,8 @@
 |--------------------|----------------------------|----------------------------------------------|
 | Mario Martínez     | [@marichu-kt](https://github.com/marichu-kt) | Desarrollador |
 | Jose Alejandro Viveros     | [@#](https://github.com/#) | Desarrollador |
-| Vittorio Perillo     | [@#](https://github.com/#) | Desarrollador |
-| Luis Baranda     | [@#](https://github.com/#) | Desarrollador |
+| Vittorio Perillo     | [@vittopa](https://github.com/vittopa) | Desarrollador |
+| Luis Baranda     | [@lbaranda1](https://github.com/lbaranda1) | Desarrollador |
 | Héctor Fernández     | [@#](https://github.com/#) | Desarrollador |
 
 ---
