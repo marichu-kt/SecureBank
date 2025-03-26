@@ -11,27 +11,6 @@
 |--------------------|----------------------------|----------------------------------------------|
 | Mario Martínez     | [@marichu-kt](https://github.com/marichu-kt) | Desarrollador |
 
-<p align="center">
-  <a href="https://github.com/marichu-kt" target="_blank">
-    <img src="https://github.com/marichu-kt.png" width="80" height="80" alt="marichu-kt"/>
-    <br><sub><b>marichu-kt</b></sub>
-  </a>
-  &nbsp;&nbsp;&nbsp;
-  <a href="https://github.com/torvalds" target="_blank">
-    <img src="https://github.com/torvalds.png" width="80" height="80" alt="torvalds"/>
-    <br><sub><b>torvalds</b></sub>
-  </a>
-  &nbsp;&nbsp;&nbsp;
-  <a href="https://github.com/octocat" target="_blank">
-    <img src="https://github.com/octocat.png" width="80" height="80" alt="octocat"/>
-    <br><sub><b>octocat</b></sub>
-  </a>
-  &nbsp;&nbsp;&nbsp;
-  <a href="https://github.com/gaearon" target="_blank">
-    <img src="https://github.com/gaearon.png" width="80" height="80" alt="gaearon"/>
-    <br><sub><b>gaearon</b></sub>
-  </a>
-</p>
 ---
 
 ## Índice de Contenidos
