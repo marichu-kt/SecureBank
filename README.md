@@ -5,6 +5,11 @@
 **Asignatura:** Sistemas Operativos (Curso 2024-2025)  
 **Práctica Final de Asignatura – Parte I**
 
+## 👥 Integrantes del Grupo
+
+| Nombre Completo   | Usuario GitHub            | Rol en el Proyecto                          |
+|--------------------|----------------------------|----------------------------------------------|
+| Mario Martínez     | [@marichu-kt](https://github.com/marichu-kt) | Desarrollador |
 ---
 
 ## Índice de Contenidos
