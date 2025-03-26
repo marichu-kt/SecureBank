@@ -62,20 +62,35 @@ void actualizar_cuenta(int tipo_op, float monto, int cta_origen, int cta_destino
     } else if (tipo_op == 2) {
         // Retiro
         if (idx_origen >= 0) {
-            arr[idx_origen].saldo -= monto;
-            arr[idx_origen].num_transacciones++;
+            if (arr[idx_origen].saldo >= monto) {
+                arr[idx_origen].saldo -= monto;
+                arr[idx_origen].num_transacciones++;
+            } else {
+                printf("⚠️ Saldo insuficiente para el retiro.\n");
+            }
+        }
+    } else if (tipo_op == 2) {
+        // Retiro
+        if (idx_origen >= 0) {
+            if (arr[idx_origen].saldo >= monto) {
+                arr[idx_origen].saldo -= monto;
+                arr[idx_origen].num_transacciones++;
+            } else {
+                printf("⚠️ Saldo insuficiente para el retiro.\n");
+            }
         }
     } else if (tipo_op == 3) {
-        // Transferencia
         if (idx_origen >= 0 && idx_destino >= 0) {
-            arr[idx_origen].saldo -= monto;
-            arr[idx_origen].num_transacciones++;
-            arr[idx_destino].saldo += monto;
-            arr[idx_destino].num_transacciones++;
+            if (arr[idx_origen].saldo >= monto) {
+                arr[idx_origen].saldo -= monto;
+                arr[idx_origen].num_transacciones++;
+                arr[idx_destino].saldo += monto;
+                arr[idx_destino].num_transacciones++;
+            } else {
+                printf("⚠️ Saldo insuficiente para la transferencia.\n");
+            }
         }
-    } else if (tipo_op == 4) {
-        // Consulta: en realidad no modifica nada
-    }
+    }    
 
     // Recolocar el puntero y reescribir
     fseek(f, 0, SEEK_SET);
