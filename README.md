@@ -10,6 +10,10 @@
 | Nombre Completo   | Usuario GitHub            | Rol en el Proyecto                          |
 |--------------------|----------------------------|----------------------------------------------|
 | Mario Martínez     | [@marichu-kt](https://github.com/marichu-kt) | Desarrollador |
+| Jose Alejandro Viveros     | [@#](https://github.com/#) | Desarrollador |
+| Vittorio Perillo     | [@#](https://github.com/#) | Desarrollador |
+| Luis Baranda     | [@#](https://github.com/#) | Desarrollador |
+| Héctor Fernández     | [@#](https://github.com/#) | Desarrollador |
 
 ---
 
