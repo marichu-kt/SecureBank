@@ -28,10 +28,6 @@
    - [Finalización del Sistema](#5-finalización-del-sistema)  
 5. [Estructura del Sistema](#estructura-del-sistema)  
 6. [Configuración del Sistema (config.txt)](#configuración-del-sistema-mediante-ficheros-de-parametrización)  
-7. [Entrega Final y Evaluación](#entrega-final)  
-8. [Consideraciones Importantes](#consideraciones-importantes)  
-9. [Cómo Compilar y Ejecutar](#cómo-compilar-y-ejecutar)  
-10. [Licencia y Autores](#licencia-y-autores)
 
 ---
 
