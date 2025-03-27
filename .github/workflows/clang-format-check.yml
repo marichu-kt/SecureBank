@@ -1,0 +1,26 @@
+name: Clang Format Check
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  clang-format:
+    name: Clang Format Check
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Install clang-format
+      run: sudo apt-get install -y clang-format
+
+    - name: Run clang-format check
+      run: |
+        FILES=$(find . -regex '.*\.\(c\|h\|cpp\|hpp\)' -not -path "./.git/*")
+        for file in $FILES; do
+          clang-format -style=file -output-replacements-xml "$file" | grep -q "<replacement " && echo "$file is not properly formatted" && exit 1
+        done
