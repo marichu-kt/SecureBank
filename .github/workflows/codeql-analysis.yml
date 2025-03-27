@@ -1,31 +1,12 @@
-name: CodeQL Manual Analysis (No Build)
+name: Unlock GitHub Actions Hero
 
 on:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
 
 jobs:
-  analyze:
-    name: Analyze C++ (No Build)
+  unlock:
     runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-      security-events: write
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v2
-
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v2
-        with:
-          languages: cpp
-
-      - name: Skip Build (No compilation)
-        run: echo "No build step required for this project."
-
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v2
+      - name: Echo para desbloquear el logro
+        run: echo "Hola GitHub!"
