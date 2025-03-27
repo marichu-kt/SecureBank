@@ -2,12 +2,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <semaphore.h>
-#include <fcntl.h>      // O_CREAT, O_EXCL
-#include <sys/stat.h>   // S_IRUSR, S_IWUSR
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <pthread.h>
-#include <sys/wait.h>
 
 typedef struct {
     int limite_retiro;
@@ -22,16 +20,16 @@ typedef struct {
 // Función para leer config.txt
 Config leer_configuracion(const char *ruta) {
     Config config;
-    memset(&config, 0, sizeof(Config)); // Inicializa en 0
+    memset(&config, 0, sizeof(Config));
     FILE *archivo = fopen(ruta, "r");
     if (!archivo) {
         perror("Error al abrir config.txt");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 
     char linea[128];
     while (fgets(linea, sizeof(linea), archivo)) {
-        if (linea[0] == '#' || strlen(linea) < 3) continue; // Ignorar comentarios y líneas vacías
+        if (linea[0] == '#' || strlen(linea) < 3) continue;
         if (strstr(linea, "LIMITE_RETIRO"))
             sscanf(linea, "LIMITE_RETIRO=%d", &config.limite_retiro);
         else if (strstr(linea, "LIMITE_TRANSFERENCIA"))
@@ -47,13 +45,14 @@ Config leer_configuracion(const char *ruta) {
         else if (strstr(linea, "ARCHIVO_LOG"))
             sscanf(linea, "ARCHIVO_LOG=%s", config.archivo_log);
     }
+
     fclose(archivo);
     return config;
 }
 
 int main() {
-    // 1. Leer la configuración
     Config config = leer_configuracion("config.txt");
+
     printf("Configuración leída:\n");
     printf("  LIMITE_RETIRO = %d\n", config.limite_retiro);
     printf("  LIMITE_TRANSFERENCIA = %d\n", config.limite_transferencia);
@@ -63,54 +62,27 @@ int main() {
     printf("  ARCHIVO_CUENTAS = %s\n", config.archivo_cuentas);
     printf("  ARCHIVO_LOG = %s\n", config.archivo_log);
 
-    // 2. Crear semáforo nombrado
+    // Crear semáforo nombrado
     sem_t *sem_cuentas = sem_open("/cuentas_sem", O_CREAT, 0644, 1);
     if (sem_cuentas == SEM_FAILED) {
         perror("No se pudo crear el semáforo /cuentas_sem");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
     printf("Semáforo /cuentas_sem creado correctamente.\n");
 
-    // 3. Lanzar proceso monitor
-    pid_t pid_monitor = fork();
-    if (pid_monitor < 0) {
-        perror("Error al crear proceso monitor");
-    } else if (pid_monitor == 0) {
-        // Proceso hijo: monitor
-        execl("./monitor", "./monitor", NULL);
-        perror("Error al ejecutar monitor");
-        exit(1);
-    }
+    printf("⏳ Esperando que usuarios y monitor se ejecuten por separado...\n");
+    printf("Cuando desee cerrar el sistema, presione ENTER...\n");
+    getchar();
 
-    // 4. Crear N procesos usuario (ejemplo: 2 usuarios)
-    for (int i = 0; i < 2; i++) {
-        pid_t pid_hijo = fork();
-        if (pid_hijo < 0) {
-            perror("Error en fork");
-            exit(1);
-        } else if (pid_hijo == 0) {
-            // Proceso hijo -> usuario
-            execl("./usuario", "./usuario", NULL);
-            perror("Error al ejecutar usuario");
-            exit(1);
-        }
-    }
-
-    // 5. Esperar a que todos los hijos (monitor + usuarios) terminen
-    for (int i = 0; i < 3; i++) {
-        int status;
-        wait(&status);
-    }
-
-    // 6. Cerrar y eliminar el semáforo
-    if (sem_close(sem_cuentas) < 0) {
+    // Cerrar y eliminar semáforo al salir
+    if (sem_close(sem_cuentas) < 0)
         perror("Error al cerrar semáforo");
-    }
-    if (sem_unlink("/cuentas_sem") < 0) {
-        perror("Error al eliminar semáforo");
-    }
-    printf("Semáforo /cuentas_sem cerrado y eliminado.\n");
 
+    if (sem_unlink("/cuentas_sem") < 0)
+        perror("Error al eliminar semáforo");
+
+    printf("Semáforo /cuentas_sem cerrado y eliminado.\n");
     printf("Proceso banco finalizado.\n");
+
     return 0;
 }
