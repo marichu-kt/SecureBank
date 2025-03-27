@@ -1,34 +1,16 @@
-name: CodeQL Security Scan
+name: Workflow simple para logro
 
 on:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
-  schedule:
-    - cron: '0 0 * * 0'  # Corre todos los domingos
 
 jobs:
-  analyze:
-    name: Analyze
+  say-hello:
     runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-      security-events: write
-
-    strategy:
-      matrix:
-        language: [ 'cpp' ]
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v2
 
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v2
-        with:
-          languages: ${{ matrix.language }}
-
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v2
+      - name: Echo mensaje
+        run: echo "Todo correcto. ¡Desbloquea el logro GitHub Actions Hero!"
