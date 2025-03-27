@@ -228,3 +228,5 @@ UMBRAL_TRANSFERENCIAS=5
 NUM_HILOS=4
 ARCHIVO_CUENTAS=cuentas.dat
 ARCHIVO_LOG=transacciones.log
+ 
+ 
