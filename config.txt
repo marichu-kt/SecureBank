@@ -7,6 +7,6 @@ UMBRAL_RETIROS=3
 UMBRAL_TRANSFERENCIAS=5
 
 # Parámetros de Ejecución
-NUM_HILOS=4
+NUM_HILOS=3
 ARCHIVO_CUENTAS=cuentas.dat
 ARCHIVO_LOG=transacciones.log

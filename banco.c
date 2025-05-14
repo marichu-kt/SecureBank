@@ -6,6 +6,10 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <sys/wait.h>
+#include <signal.h>
+
+#define MAX_PROCESOS 100
 
 typedef struct {
     int limite_retiro;
@@ -70,9 +74,41 @@ int main() {
     }
     printf("Semáforo /cuentas_sem creado correctamente.\n");
 
-    printf("Esperando que usuarios y monitor se ejecuten por separado...\n");
-    printf("Cuando desee cerrar el sistema, presione ENTER...\n");
+    pid_t pids[MAX_PROCESOS];
+    int index = 0;
+
+    // Lanzar monitor
+    printf("Lanzando monitor...\n");
+    pid_t pid_monitor = fork();
+    if (pid_monitor == 0) {
+        execlp("gnome-terminal", "gnome-terminal", "--", "bash", "-c", "./monitor", NULL);
+        perror("Error al lanzar monitor");
+        exit(EXIT_FAILURE);
+    }
+    pids[index++] = pid_monitor;
+
+    // Lanzar usuarios
+    for (int i = 0; i < config.num_hilos; i++) {
+        printf("Lanzando usuario %d...\n", i + 1);
+        pid_t pid_usuario = fork();
+        if (pid_usuario == 0) {
+            execlp("gnome-terminal", "gnome-terminal", "--", "bash", "-c", "./usuario", NULL);
+            perror("Error al lanzar usuario");
+            exit(EXIT_FAILURE);
+        }
+        pids[index++] = pid_usuario;
+        sleep(1);
+    }
+
+    printf("Todos los procesos han sido lanzados.\n");
+    printf("Presione ENTER para cerrar el sistema y eliminar el semáforo...\n");
     getchar();
+
+    // Terminar procesos hijos
+    printf("Cerrando procesos lanzados...\n");
+    for (int i = 0; i < index; i++) {
+        kill(pids[i], SIGKILL); // Cierre inmediato
+    }
 
     // Cerrar y eliminar semáforo al salir
     if (sem_close(sem_cuentas) < 0)

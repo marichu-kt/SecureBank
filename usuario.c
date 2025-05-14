@@ -44,6 +44,7 @@ struct msgbuf {
 
 sem_t *sem_cuentas = NULL;
 Config config;
+int cuenta_sesion = -1;
 
 Config leer_configuracion(const char *ruta) {
     Config config;
@@ -89,7 +90,7 @@ void enviar_a_monitor(const char *mensaje) {
     }
 }
 
-void actualizar_cuenta(int tipo_op, float monto, int cta_origen, int cta_destino) {
+void actualizar_cuenta(int tipo_op, float monto, int cta_destino) {
     sem_wait(sem_cuentas);
     FILE *f = fopen("cuentas.dat", "rb+");
     if (!f) {
@@ -104,7 +105,7 @@ void actualizar_cuenta(int tipo_op, float monto, int cta_origen, int cta_destino
 
     int idx_origen = -1, idx_destino = -1;
     for (int i = 0; i < total; i++) {
-        if (arr[i].numero_cuenta == cta_origen)
+        if (arr[i].numero_cuenta == cuenta_sesion)
             idx_origen = i;
         if (arr[i].numero_cuenta == cta_destino)
             idx_destino = i;
@@ -112,9 +113,8 @@ void actualizar_cuenta(int tipo_op, float monto, int cta_origen, int cta_destino
 
     char buffer[TAM_MAX] = "";
 
-    // Validación de existencia de cuentas
     if (idx_origen == -1) {
-        printf("Error: La cuenta origen %d no existe.\n", cta_origen);
+        printf("Error: La cuenta origen %d no existe.\n", cuenta_sesion);
         fclose(f);
         sem_post(sem_cuentas);
         return;
@@ -126,16 +126,15 @@ void actualizar_cuenta(int tipo_op, float monto, int cta_origen, int cta_destino
         return;
     }
 
-    // Operaciones
     if (tipo_op == 1) {
         arr[idx_origen].saldo += monto;
         arr[idx_origen].num_transacciones++;
-        snprintf(buffer, TAM_MAX, "DEPOSITO %d %.2f", cta_origen, monto);
+        snprintf(buffer, TAM_MAX, "DEPOSITO %d %.2f", cuenta_sesion, monto);
     } else if (tipo_op == 2) {
         if (arr[idx_origen].saldo >= monto) {
             arr[idx_origen].saldo -= monto;
             arr[idx_origen].num_transacciones++;
-            snprintf(buffer, TAM_MAX, "RETIRO %d %.2f", cta_origen, monto);
+            snprintf(buffer, TAM_MAX, "RETIRO %d %.2f", cuenta_sesion, monto);
         } else {
             printf("Saldo insuficiente para el retiro.\n");
         }
@@ -145,7 +144,7 @@ void actualizar_cuenta(int tipo_op, float monto, int cta_origen, int cta_destino
             arr[idx_origen].num_transacciones++;
             arr[idx_destino].saldo += monto;
             arr[idx_destino].num_transacciones++;
-            snprintf(buffer, TAM_MAX, "TRANSFERENCIA %d %d %.2f", cta_origen, cta_destino, monto);
+            snprintf(buffer, TAM_MAX, "TRANSFERENCIA %d %d %.2f", cuenta_sesion, cta_destino, monto);
         } else {
             printf("Saldo insuficiente para la transferencia.\n");
         }
@@ -161,12 +160,6 @@ void actualizar_cuenta(int tipo_op, float monto, int cta_origen, int cta_destino
     }
 }
 
-void* hilo_operacion(void *arg) {
-    DatosOperacion *op = (DatosOperacion*) arg;
-    actualizar_cuenta(op->tipo_operacion, op->monto, op->cuenta_origen, op->cuenta_destino);
-    return NULL;
-}
-
 int main() {
     config = leer_configuracion("config.txt");
 
@@ -176,16 +169,47 @@ int main() {
         exit(1);
     }
 
+    // Inicio de sesión
+    int cuenta_valida = 0;
+    while (!cuenta_valida) {
+        printf("\n╔═════════════════════════════╗\n");
+        printf("║ INICIO DE SESIÓN DE USUARIO ║\n");
+        printf("╚═════════════════════════════╝\n");
+        printf("Introduce tu número de cuenta: ");
+        
+        scanf("%d", &cuenta_sesion);
+
+        sem_wait(sem_cuentas);
+        FILE *f = fopen("cuentas.dat", "rb");
+        Cuenta arr[100];
+        int total = fread(arr, sizeof(Cuenta), 100, f);
+        fclose(f);
+        sem_post(sem_cuentas);
+
+        for (int i = 0; i < total; i++) {
+            if (arr[i].numero_cuenta == cuenta_sesion) {
+                cuenta_valida = 1;
+                break;
+            }
+        }
+
+        if (!cuenta_valida) {
+            printf("Cuenta no encontrada. Inténtalo de nuevo.\n");
+        }
+    }
+
     while (1) {
-        printf("\n╔════════════════════════════╗\n");
-        printf("║     CAJERO AUTOMÁTICO      ║\n");
-        printf("╠════════════════════════════╣\n");
-        printf("║ 1. Depósito                ║\n");
-        printf("║ 2. Retiro                  ║\n");
-        printf("║ 3. Transferencia           ║\n");
-        printf("║ 4. Consultar saldo         ║\n");
-        printf("║ 5. Salir                   ║\n");
-        printf("╚════════════════════════════╝\n");
+        printf("\n╔══════════════════════════╗\n");
+        printf("║    CAJERO AUTOMÁTICO     ║\n");
+        printf("╠══════════════════════════╣\n");
+        printf("║      CUENTA: %d        ║\n", cuenta_sesion);
+        printf("╠══════════════════════════╣\n");
+        printf("║ 1. Depósito              ║\n");
+        printf("║ 2. Retiro                ║\n");
+        printf("║ 3. Transferencia         ║\n");
+        printf("║ 4. Consultar saldo       ║\n");
+        printf("║ 5. Salir                 ║\n");
+        printf("╚══════════════════════════╝\n");
         printf("Seleccione una opción: ");
 
         int opcion;
@@ -200,38 +224,32 @@ int main() {
             break;
         }
 
-        DatosOperacion op = {0};
-        op.tipo_operacion = opcion;
-
-        printf("Cuenta origen: ");
-        scanf("%d", &op.cuenta_origen);
+        float monto;
+        int cuenta_destino;
 
         if (opcion == 1) {
             printf("Monto a depositar: ");
-            scanf("%f", &op.monto);
+            scanf("%f", &monto);
+            actualizar_cuenta(1, monto, 0);
         } else if (opcion == 2) {
             printf("Monto a retirar: ");
-            scanf("%f", &op.monto);
-            if (op.monto > config.limite_retiro) {
+            scanf("%f", &monto);
+            if (monto > config.limite_retiro) {
                 printf("Error: el retiro excede el límite permitido (%d).\n", config.limite_retiro);
                 continue;
             }
+            actualizar_cuenta(2, monto, 0);
         } else if (opcion == 3) {
             printf("Cuenta destino: ");
-            scanf("%d", &op.cuenta_destino);
+            scanf("%d", &cuenta_destino);
             printf("Monto a transferir: ");
-            scanf("%f", &op.monto);
-            if (op.monto > config.limite_transferencia) {
+            scanf("%f", &monto);
+            if (monto > config.limite_transferencia) {
                 printf("Error: la transferencia excede el límite permitido (%d).\n", config.limite_transferencia);
                 continue;
             }
-        }
-
-        pthread_t tid;
-        pthread_create(&tid, NULL, hilo_operacion, &op);
-        pthread_join(tid, NULL);
-
-        if (opcion == 4) {
+            actualizar_cuenta(3, monto, cuenta_destino);
+        } else if (opcion == 4) {
             sem_wait(sem_cuentas);
             FILE *f = fopen("cuentas.dat", "rb");
             if (!f) {
@@ -246,7 +264,7 @@ int main() {
 
             int found = 0;
             for (int i = 0; i < total; i++) {
-                if (arr[i].numero_cuenta == op.cuenta_origen) {
+                if (arr[i].numero_cuenta == cuenta_sesion) {
                     printf("Saldo de la cuenta %d = %.2f\n", arr[i].numero_cuenta, arr[i].saldo);
                     found = 1;
                     break;
