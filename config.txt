@@ -9,4 +9,5 @@ UMBRAL_TRANSFERENCIAS=5
 # Parámetros de Ejecución
 NUM_HILOS=3
 ARCHIVO_CUENTAS=cuentas.dat
-ARCHIVO_LOG=transacciones.log
+# Archivo de log global del monitor
+ARCHIVO_LOG=log_banco_completo.log

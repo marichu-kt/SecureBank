@@ -1,30 +1,41 @@
+/* init_cuentas.c  –  Genera cuentas.dat con la estructura vigente */
+
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
+/* ---------- Estructura actual de una cuenta ---------- */
 typedef struct {
-    int numero_cuenta;
-    char titular[50];
+    int   numero_cuenta;
+    char  titular[50];
     float saldo;
-    int num_transacciones;
+    int   bloqueado;          /* 0 = activa, 1 = bloqueada */
 } Cuenta;
 
-int main() {
-    FILE *archivo = fopen("cuentas.dat", "wb");
-    if (!archivo) {
-        perror("No se pudo crear el archivo de cuentas");
+int main(void)
+{
+    FILE *f = fopen("cuentas.dat", "wb");
+    if (!f) {
+        perror("cuentas.dat");
         return 1;
     }
 
+    /* Cuentas iniciales */
     Cuenta cuentas[] = {
-        {1001, "John Doe", 5000.00, 0},
-        {1002, "Jane Smith", 3000.00, 0},
-        {1003, "Carlos Ruiz", 7000.00, 0}
+        {1001, "John Doe",    5000.00f, 0},
+        {1002, "Jane Smith",  3000.00f, 0},
+        {1003, "Carlos Ruiz", 7000.00f, 0}
     };
 
-    fwrite(cuentas, sizeof(Cuenta), 3, archivo);
-    fclose(archivo);
+    size_t total = sizeof(cuentas) / sizeof(cuentas[0]);
+    size_t escritos = fwrite(cuentas, sizeof(Cuenta), total, f);
+    fclose(f);
 
-    printf("Archivo cuentas.dat creado con éxito.\n");
+    if (escritos != total) {
+        fprintf(stderr, "Error: solo se escribieron %zu de %zu cuentas\n",
+                escritos, total);
+        return 1;
+    }
+
+    puts("Archivo cuentas.dat creado con la estructura nueva.");
     return 0;
 }

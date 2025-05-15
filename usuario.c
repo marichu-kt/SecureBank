@@ -1,280 +1,371 @@
+/* usuario.c — Proceso interactivo de SecureBank
+ *
+ *   • Recibe por argv[1] el shm_id que creó “banco”.
+ *   • Hace shmat → obtiene puntero a TablaCuentas.
+ *   • Todas las operaciones sobre la tabla se protegen con el
+ *     mutex (PTHREAD_PROCESS_SHARED) que vive dentro de la SHM.
+ *
+ *   ¡Ya no usamos el semáforo POSIX “/cuentas_sem” ni tocamos
+ *   cuentas.dat directamente!
+ */
+/* usuario.c — Terminal interactivo de SecureBank
+ * - Accede a la tabla de cuentas en memoria compartida
+ * - Protege la tabla con el mutex PTHREAD_PROCESS_SHARED (tabla->mutex)
+ * - Registra cada operación en transacciones/<cuenta>/transacciones.log
+ *   usando un semáforo POSIX nombrado (/log_<cuenta>)                    */
+
+/*  usuario.c  — Productor de entradas en el buffer de E/S
+ *  ▸ Actualiza la tabla de cuentas en SHM
+ *  ▸ Empuja la cuenta modificada al buffer circular (BufferEstructurado)
+ *  ▸ Registra transacciones en su log privado y avisa al monitor
+ */
+
+/* usuario.c — Proceso interactivo de SecureBank
+ *   ● Accede a la tabla de cuentas en SHM
+ *   ● Inserta cada operación en la cola de prioridad compartida
+ *   ● Registra logs individuales y avisa al monitor
+ *
+ *  Compilar:  gcc -D_POSIX_C_SOURCE=200809L usuario.c -o usuario -lrt -pthread
+ */
+#define _POSIX_C_SOURCE 200809L      /* getline(), nanosleep … */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
-#include <semaphore.h>
-#include <fcntl.h>
-#include <sys/types.h>
-#include <sys/stat.h>
 #include <sys/ipc.h>
 #include <sys/msg.h>
+#include <sys/shm.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <time.h>
+#include <semaphore.h>
 
-#define MSG_KEY 1234
-#define TAM_MAX 128
+/* ──────────  Constantes  ────────── */
+#define MSG_KEY   1234
+#define TAM_MAX   128
+#define BUF_CAP   64                 /* igual que en banco.c          */
 
+/* ──────────  Estructuras en la SHM  ────────── */
 typedef struct {
-    int numero_cuenta;
-    char titular[50];
+    int   numero_cuenta;
+    char  titular[50];
     float saldo;
-    int num_transacciones;
+    int   bloqueado;                 /* 1 = bloqueada, 0 = activa     */
 } Cuenta;
 
-typedef struct {
-    int tipo_operacion;
-    float monto;
-    int cuenta_origen;
-    int cuenta_destino;
-} DatosOperacion;
+/* prioridades (debe coincidir con banco.c) */
+typedef enum { P_BAJA = 0, P_MEDIA = 1, P_ALTA = 2 } Prioridad;
 
 typedef struct {
-    int limite_retiro;
-    int limite_transferencia;
-    int umbral_retiros;
-    int umbral_transferencias;
-    int num_hilos;
-    char archivo_cuentas[50];
+    Prioridad prio;
+    Cuenta    snapshot;              /* estado tras la operación      */
+} Operacion;
+
+typedef struct {
+    Operacion ops[BUF_CAP];
+    int       n;                     /* elementos actuales            */
+} BufferPrioridad;
+
+typedef struct {
+    Cuenta          cuentas[100];
+    int             num_cuentas;
+    pthread_mutex_t mutex;           /* compartido entre procesos     */
+    BufferPrioridad buffer;          /* cola de prioridad             */
+} TablaCuentas;
+
+/* ──────────  Configuración local ────────── */
+typedef struct {
+    int  limite_retiro;
+    int  limite_transferencia;
     char archivo_log[50];
 } Config;
 
+/* ──────────  Mensaje a monitor  ────────── */
 struct msgbuf {
     long tipo;
     char texto[TAM_MAX];
 };
 
-sem_t *sem_cuentas = NULL;
-Config config;
-int cuenta_sesion = -1;
+/* ──────────  Variables globales  ────────── */
+static Config            cfg;
+static TablaCuentas     *tabla = NULL;     /* SHM                     */
+static pthread_mutex_t  *mtx   = NULL;     /* alias tabla->mutex      */
+static int               cuenta_sesion = -1;
 
-Config leer_configuracion(const char *ruta) {
-    Config config;
-    memset(&config, 0, sizeof(Config));
-    FILE *archivo = fopen(ruta, "r");
-    if (!archivo) {
-        perror("Error al abrir config.txt");
-        exit(1);
-    }
-    char linea[128];
-    while (fgets(linea, sizeof(linea), archivo)) {
-        if (linea[0] == '#' || strlen(linea) < 3) continue;
-        if (strstr(linea, "LIMITE_RETIRO"))
-            sscanf(linea, "LIMITE_RETIRO=%d", &config.limite_retiro);
-        else if (strstr(linea, "LIMITE_TRANSFERENCIA"))
-            sscanf(linea, "LIMITE_TRANSFERENCIA=%d", &config.limite_transferencia);
-        else if (strstr(linea, "UMBRAL_RETIROS"))
-            sscanf(linea, "UMBRAL_RETIROS=%d", &config.umbral_retiros);
-        else if (strstr(linea, "UMBRAL_TRANSFERENCIAS"))
-            sscanf(linea, "UMBRAL_TRANSFERENCIAS=%d", &config.umbral_transferencias);
-        else if (strstr(linea, "NUM_HILOS"))
-            sscanf(linea, "NUM_HILOS=%d", &config.num_hilos);
-        else if (strstr(linea, "ARCHIVO_CUENTAS"))
-            sscanf(linea, "ARCHIVO_CUENTAS=%s", config.archivo_cuentas);
-        else if (strstr(linea, "ARCHIVO_LOG"))
-            sscanf(linea, "ARCHIVO_LOG=%s", config.archivo_log);
-    }
-    fclose(archivo);
-    return config;
-}
+/* semáforo para el log del usuario */
+static sem_t            *sem_log = NULL;
+static char              sem_name[32];
 
-void enviar_a_monitor(const char *mensaje) {
-    int cola_id = msgget(MSG_KEY, 0666);
-    if (cola_id == -1) {
-        perror("Error al acceder a la cola de mensajes");
-        return;
-    }
-    struct msgbuf msg;
-    msg.tipo = 1;
-    strncpy(msg.texto, mensaje, TAM_MAX);
-    if (msgsnd(cola_id, &msg, sizeof(msg.texto), 0) == -1) {
-        perror("Error al enviar mensaje al monitor");
-    }
-}
+/* ───────────────────────────────────────────── */
+/*                 UTILIDADES                   */
+/* ───────────────────────────────────────────── */
+static Config leer_config(const char *ruta)
+{
+    Config c = {0};
+    FILE *f = fopen(ruta, "r");
+    if (!f) { perror("config.txt"); exit(EXIT_FAILURE); }
 
-void actualizar_cuenta(int tipo_op, float monto, int cta_destino) {
-    sem_wait(sem_cuentas);
-    FILE *f = fopen("cuentas.dat", "rb+");
-    if (!f) {
-        perror("Error al abrir cuentas.dat");
-        sem_post(sem_cuentas);
-        return;
+    char ln[128];
+    while (fgets(ln, sizeof ln, f)) {
+        if (ln[0]=='#' || strlen(ln)<3) continue;
+        sscanf(ln, "LIMITE_RETIRO=%d",        &c.limite_retiro);
+        sscanf(ln, "LIMITE_TRANSFERENCIA=%d", &c.limite_transferencia);
+        sscanf(ln, "ARCHIVO_LOG=%49s",         c.archivo_log);
     }
-
-    Cuenta arr[100];
-    int total = fread(arr, sizeof(Cuenta), 100, f);
-    if (total < 0) total = 0;
-
-    int idx_origen = -1, idx_destino = -1;
-    for (int i = 0; i < total; i++) {
-        if (arr[i].numero_cuenta == cuenta_sesion)
-            idx_origen = i;
-        if (arr[i].numero_cuenta == cta_destino)
-            idx_destino = i;
-    }
-
-    char buffer[TAM_MAX] = "";
-
-    if (idx_origen == -1) {
-        printf("Error: La cuenta origen %d no existe.\n", cuenta_sesion);
-        fclose(f);
-        sem_post(sem_cuentas);
-        return;
-    }
-    if (tipo_op == 3 && idx_destino == -1) {
-        printf("Error: La cuenta destino %d no existe.\n", cta_destino);
-        fclose(f);
-        sem_post(sem_cuentas);
-        return;
-    }
-
-    if (tipo_op == 1) {
-        arr[idx_origen].saldo += monto;
-        arr[idx_origen].num_transacciones++;
-        snprintf(buffer, TAM_MAX, "DEPOSITO %d %.2f", cuenta_sesion, monto);
-    } else if (tipo_op == 2) {
-        if (arr[idx_origen].saldo >= monto) {
-            arr[idx_origen].saldo -= monto;
-            arr[idx_origen].num_transacciones++;
-            snprintf(buffer, TAM_MAX, "RETIRO %d %.2f", cuenta_sesion, monto);
-        } else {
-            printf("Saldo insuficiente para el retiro.\n");
-        }
-    } else if (tipo_op == 3) {
-        if (arr[idx_origen].saldo >= monto) {
-            arr[idx_origen].saldo -= monto;
-            arr[idx_origen].num_transacciones++;
-            arr[idx_destino].saldo += monto;
-            arr[idx_destino].num_transacciones++;
-            snprintf(buffer, TAM_MAX, "TRANSFERENCIA %d %d %.2f", cuenta_sesion, cta_destino, monto);
-        } else {
-            printf("Saldo insuficiente para la transferencia.\n");
-        }
-    }
-
-    fseek(f, 0, SEEK_SET);
-    fwrite(arr, sizeof(Cuenta), total, f);
     fclose(f);
-    sem_post(sem_cuentas);
+    return c;
+}
 
-    if (strlen(buffer) > 0) {
-        enviar_a_monitor(buffer);
+static void enviar_monitor(const char *txt)
+{
+    int q = msgget(MSG_KEY, 0666);
+    if (q == -1) { perror("msgget"); return; }
+    struct msgbuf m = { .tipo = 1 };
+    strncpy(m.texto, txt, TAM_MAX - 1);
+    msgsnd(q, &m, sizeof m.texto, 0);
+}
+
+static int buscar_cuenta(int num)
+{
+    for (int i = 0; i < tabla->num_cuentas; ++i)
+        if (tabla->cuentas[i].numero_cuenta == num)
+            return i;
+    return -1;
+}
+
+/* ──────────  Cola de prioridad: inserción ordenada  ────────── */
+static void buffer_push(const Cuenta *cta, Prioridad pr)
+{
+    BufferPrioridad *b = &tabla->buffer;
+
+    if (b->n >= BUF_CAP)            /* cola llena: descarta la + baja */
+        return;
+
+    /* insertamos al final y hacemos “up-heap” para mantener orden */
+    int i = b->n++;
+    while (i > 0 && b->ops[i-1].prio < pr) {
+        b->ops[i] = b->ops[i-1];
+        --i;
+    }
+    b->ops[i].prio     = pr;
+    b->ops[i].snapshot = *cta;
+}
+
+/* ──────────  Logging protegido  ────────── */
+static void log_transaccion(const char *linea)
+{
+    char ruta[160];
+    snprintf(ruta, sizeof ruta,
+             "transacciones/%d/transacciones.log", cuenta_sesion);
+
+    sem_wait(sem_log);
+
+    FILE *lf = fopen(ruta, "a");
+    if (lf) {
+        char ts[32];
+        time_t t = time(NULL);
+        strftime(ts, sizeof ts, "[%Y-%m-%d %H:%M:%S]", localtime(&t));
+        fprintf(lf, "%s %s\n", ts, linea);
+        fclose(lf);
+    } else {
+        perror("fopen log");
+    }
+
+    sem_post(sem_log);
+}
+
+/* ───────────────────────────────────────────── */
+/*            OPERACIONES BANCARIAS              */
+/* ───────────────────────────────────────────── */
+static void deposito(float monto)
+{
+    pthread_mutex_lock(mtx);
+
+    int idx = buscar_cuenta(cuenta_sesion);
+    tabla->cuentas[idx].saldo += monto;
+
+    Cuenta copia = tabla->cuentas[idx];
+    buffer_push(&copia, P_MEDIA);      /* depósitos = prioridad media */
+
+    pthread_mutex_unlock(mtx);
+
+    char buf[TAM_MAX];
+    snprintf(buf, sizeof buf, "Depósito: +%.2f", monto);
+    log_transaccion(buf);
+
+    snprintf(buf, sizeof buf, "DEPOSITO %d %.2f", cuenta_sesion, monto);
+    enviar_monitor(buf);
+}
+
+static void retiro(float monto)
+{
+    pthread_mutex_lock(mtx);
+
+    int idx = buscar_cuenta(cuenta_sesion);
+    if (tabla->cuentas[idx].saldo >= monto) {
+        tabla->cuentas[idx].saldo -= monto;
+
+        Cuenta copia = tabla->cuentas[idx];
+        buffer_push(&copia, P_ALTA);   /* retiros = prioridad alta */
+
+        pthread_mutex_unlock(mtx);
+
+        char buf[TAM_MAX];
+        snprintf(buf, sizeof buf, "Retiro: -%.2f", monto);
+        log_transaccion(buf);
+
+        snprintf(buf, sizeof buf, "RETIRO %d %.2f", cuenta_sesion, monto);
+        enviar_monitor(buf);
+    } else {
+        pthread_mutex_unlock(mtx);
+        puts("Saldo insuficiente.");
     }
 }
 
-int main() {
-    config = leer_configuracion("config.txt");
+static void transferencia(int destino, float monto)
+{
+    pthread_mutex_lock(mtx);
 
-    sem_cuentas = sem_open("/cuentas_sem", 0);
-    if (sem_cuentas == SEM_FAILED) {
-        perror("Error al abrir semaforo /cuentas_sem en usuario");
-        exit(1);
+    int idx_o = buscar_cuenta(cuenta_sesion);
+    int idx_d = buscar_cuenta(destino);
+    if (idx_d == -1) { pthread_mutex_unlock(mtx);
+                       puts("Cuenta destino no existe."); return; }
+
+    if (tabla->cuentas[idx_o].saldo >= monto) {
+        tabla->cuentas[idx_o].saldo -= monto;
+        tabla->cuentas[idx_d].saldo += monto;
+
+        buffer_push(&tabla->cuentas[idx_o], P_ALTA);
+        buffer_push(&tabla->cuentas[idx_d], P_ALTA);
+
+        pthread_mutex_unlock(mtx);
+
+        char buf[TAM_MAX];
+        snprintf(buf, sizeof buf, "Transferencia a %d: -%.2f", destino, monto);
+        log_transaccion(buf);
+
+        snprintf(buf, sizeof buf, "TRANSFERENCIA %d %d %.2f",
+                 cuenta_sesion, destino, monto);
+        enviar_monitor(buf);
+    } else {
+        pthread_mutex_unlock(mtx);
+        puts("Saldo insuficiente.");
     }
+}
 
-    // Inicio de sesión
-    int cuenta_valida = 0;
-    while (!cuenta_valida) {
+static void consultar_saldo(void)
+{
+    pthread_mutex_lock(mtx);
+    int idx = buscar_cuenta(cuenta_sesion);
+    float s = tabla->cuentas[idx].saldo;
+
+    buffer_push(&tabla->cuentas[idx], P_MEDIA);  /* lectura -> prio media */
+
+    pthread_mutex_unlock(mtx);
+
+    printf("Saldo actual = %.2f €\n", s);
+}
+
+/* ───────────────────────────────────────────── */
+/*                  INTERFAZ TEXTO               */
+/* ───────────────────────────────────────────── */
+static void menu_operaciones(void)
+{
+    for (;;) {
+        printf("\n╔════════════════════════════╗\n");
+        printf("║   CAJERO  |  CUENTA %-6d ║\n", cuenta_sesion);
+        printf("╠════════════════════════════╣\n");
+        printf("║ 1. Depósito                ║\n");
+        printf("║ 2. Retiro                  ║\n");
+        printf("║ 3. Transferencia           ║\n");
+        printf("║ 4. Consultar saldo         ║\n");
+        printf("║ 5. Salir                   ║\n");
+        printf("╚════════════════════════════╝\n");
+        printf("Seleccione: ");
+
+        int op; if (scanf("%d",&op)!=1) exit(0);
+        if (op==5) break;
+
+        float monto; int dest;
+        switch (op) {
+        case 1:
+            printf("Monto a depositar: "); scanf("%f",&monto);
+            deposito(monto);                break;
+        case 2:
+            printf("Monto a retirar: ");   scanf("%f",&monto);
+            if (monto > cfg.limite_retiro)
+                printf("Límite de retiro: %d\n", cfg.limite_retiro);
+            else retiro(monto);
+            break;
+        case 3:
+            printf("Cuenta destino: ");     scanf("%d",&dest);
+            printf("Monto a transferir: "); scanf("%f",&monto);
+            if (monto > cfg.limite_transferencia)
+                printf("Límite de transferencia: %d\n",
+                       cfg.limite_transferencia);
+            else transferencia(dest,monto);
+            break;
+        case 4:
+            consultar_saldo();              break;
+        default:
+            puts("Opción inválida.");
+        }
+    }
+}
+
+/* ───────────────────────────────────────────── */
+/*                     main                      */
+/* ───────────────────────────────────────────── */
+int main(int argc,char *argv[])
+{
+    if (argc<2){ fprintf(stderr,"Uso: %s <shm_id>\n",argv[0]); exit(EXIT_FAILURE); }
+    int shm_id = atoi(argv[1]);
+
+    /* 1. Conectar a la SHM */
+    tabla = shmat(shm_id,NULL,0);
+    if (tabla==(void*)-1){ perror("shmat"); exit(EXIT_FAILURE); }
+    mtx = &tabla->mutex;
+
+    cfg = leer_config("config.txt");
+
+    /* 2. Autenticación simple */
+    while (1) {
         printf("\n╔═════════════════════════════╗\n");
         printf("║ INICIO DE SESIÓN DE USUARIO ║\n");
         printf("╚═════════════════════════════╝\n");
         printf("Introduce tu número de cuenta: ");
-        
-        scanf("%d", &cuenta_sesion);
+        if (scanf("%d",&cuenta_sesion)!=1) exit(0);
 
-        sem_wait(sem_cuentas);
-        FILE *f = fopen("cuentas.dat", "rb");
-        Cuenta arr[100];
-        int total = fread(arr, sizeof(Cuenta), 100, f);
-        fclose(f);
-        sem_post(sem_cuentas);
+        pthread_mutex_lock(mtx);
+        int idx = buscar_cuenta(cuenta_sesion);
+        int ok  = idx!=-1 && tabla->cuentas[idx].bloqueado==0;
+        pthread_mutex_unlock(mtx);
 
-        for (int i = 0; i < total; i++) {
-            if (arr[i].numero_cuenta == cuenta_sesion) {
-                cuenta_valida = 1;
-                break;
-            }
-        }
-
-        if (!cuenta_valida) {
-            printf("Cuenta no encontrada. Inténtalo de nuevo.\n");
-        }
+        if (ok) break;
+        puts("Cuenta no válida o bloqueada.");
     }
 
-    while (1) {
-        printf("\n╔══════════════════════════╗\n");
-        printf("║    CAJERO AUTOMÁTICO     ║\n");
-        printf("╠══════════════════════════╣\n");
-        printf("║      CUENTA: %d        ║\n", cuenta_sesion);
-        printf("╠══════════════════════════╣\n");
-        printf("║ 1. Depósito              ║\n");
-        printf("║ 2. Retiro                ║\n");
-        printf("║ 3. Transferencia         ║\n");
-        printf("║ 4. Consultar saldo       ║\n");
-        printf("║ 5. Salir                 ║\n");
-        printf("╚══════════════════════════╝\n");
-        printf("Seleccione una opción: ");
+    /* 3. Directorio/semáforo del log */
+    if (mkdir("transacciones",0777)==-1 && errno!=EEXIST)
+        perror("mkdir transacciones");
 
-        int opcion;
-        scanf("%d", &opcion);
+    char dir[128];
+    snprintf(dir,sizeof dir,"transacciones/%d",cuenta_sesion);
+    if (mkdir(dir,0777)==-1 && errno!=EEXIST)
+        perror("mkdir cuenta");
 
-        if (opcion < 1 || opcion > 5) {
-            printf("Opción inválida.\n");
-            continue;
-        }
-        if (opcion == 5) {
-            printf("Saliendo...\n");
-            break;
-        }
+    snprintf(sem_name,sizeof sem_name,"/log_%d",cuenta_sesion);
+    sem_log = sem_open(sem_name,O_CREAT,0644,1);
+    if (sem_log==SEM_FAILED){ perror("sem_open log"); exit(EXIT_FAILURE); }
 
-        float monto;
-        int cuenta_destino;
+    /* 4. Operaciones */
+    menu_operaciones();
 
-        if (opcion == 1) {
-            printf("Monto a depositar: ");
-            scanf("%f", &monto);
-            actualizar_cuenta(1, monto, 0);
-        } else if (opcion == 2) {
-            printf("Monto a retirar: ");
-            scanf("%f", &monto);
-            if (monto > config.limite_retiro) {
-                printf("Error: el retiro excede el límite permitido (%d).\n", config.limite_retiro);
-                continue;
-            }
-            actualizar_cuenta(2, monto, 0);
-        } else if (opcion == 3) {
-            printf("Cuenta destino: ");
-            scanf("%d", &cuenta_destino);
-            printf("Monto a transferir: ");
-            scanf("%f", &monto);
-            if (monto > config.limite_transferencia) {
-                printf("Error: la transferencia excede el límite permitido (%d).\n", config.limite_transferencia);
-                continue;
-            }
-            actualizar_cuenta(3, monto, cuenta_destino);
-        } else if (opcion == 4) {
-            sem_wait(sem_cuentas);
-            FILE *f = fopen("cuentas.dat", "rb");
-            if (!f) {
-                perror("Error al abrir cuentas.dat");
-                sem_post(sem_cuentas);
-                continue;
-            }
-            Cuenta arr[100];
-            int total = fread(arr, sizeof(Cuenta), 100, f);
-            fclose(f);
-            sem_post(sem_cuentas);
-
-            int found = 0;
-            for (int i = 0; i < total; i++) {
-                if (arr[i].numero_cuenta == cuenta_sesion) {
-                    printf("Saldo de la cuenta %d = %.2f\n", arr[i].numero_cuenta, arr[i].saldo);
-                    found = 1;
-                    break;
-                }
-            }
-            if (!found)
-                printf("Cuenta no encontrada.\n");
-        }
-    }
-
-    sem_close(sem_cuentas);
+    /* 5. Limpieza */
+    sem_close(sem_log);
+    shmdt(tabla);
     return 0;
 }
