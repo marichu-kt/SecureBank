@@ -10,10 +10,10 @@
 | Nombre Completo   | Usuario GitHub            | Rol en el Proyecto                          |
 |--------------------|----------------------------|----------------------------------------------|
 | Mario Martínez     | [@marichu-kt](https://github.com/marichu-kt) | Desarrollador |
-| Jose Alejandro Viveros     | [@JoseUFV22](https://github.com/JoseUFV22) | Desarrollador |
-| Vittorio Perillo     | [@vittopa](https://github.com/vittopa) | Desarrollador |
-| Luis Baranda     | [@Luisnator38](https://github.com/Luisnator38) | Desarrollador |
-| Héctor Fernández     | [@Hectorfdez](https://github.com/Hectorfdez) | Desarrollador |
+| Jose Alejandro Viveros     | [@JoseUFV22](https://github.com/JoseUFV22) | ¿? |
+| Vittorio Perillo     | [@vittopa](https://github.com/vittopa) | ¿? |
+| Luis Baranda     | [@Luisnator38](https://github.com/Luisnator38) | ¿? |
+| Héctor Fernández     | [@Hectorfdez](https://github.com/Hectorfdez) | ¿? |
 
 ---
 
