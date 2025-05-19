@@ -43,45 +43,14 @@
 #include <time.h>
 #include <semaphore.h>
 
+#include "utils.h"
+
+
 /* ──────────  Constantes  ────────── */
 #define MSG_KEY   1234
 #define TAM_MAX   128
 #define BUF_CAP   64                 /* igual que en banco.c          */
 
-/* ──────────  Estructuras en la SHM  ────────── */
-typedef struct {
-    int   numero_cuenta;
-    char  titular[50];
-    float saldo;
-    int   bloqueado;                 /* 1 = bloqueada, 0 = activa     */
-} Cuenta;
-
-/* prioridades (debe coincidir con banco.c) */
-typedef enum { P_BAJA = 0, P_MEDIA = 1, P_ALTA = 2 } Prioridad;
-
-typedef struct {
-    Prioridad prio;
-    Cuenta    snapshot;              /* estado tras la operación      */
-} Operacion;
-
-typedef struct {
-    Operacion ops[BUF_CAP];
-    int       n;                     /* elementos actuales            */
-} BufferPrioridad;
-
-typedef struct {
-    Cuenta          cuentas[100];
-    int             num_cuentas;
-    pthread_mutex_t mutex;           /* compartido entre procesos     */
-    BufferPrioridad buffer;          /* cola de prioridad             */
-} TablaCuentas;
-
-/* ──────────  Configuración local ────────── */
-typedef struct {
-    int  limite_retiro;
-    int  limite_transferencia;
-    char archivo_log[50];
-} Config;
 
 /* ──────────  Mensaje a monitor  ────────── */
 struct msgbuf {
@@ -102,22 +71,7 @@ static char              sem_name[32];
 /* ───────────────────────────────────────────── */
 /*                 UTILIDADES                   */
 /* ───────────────────────────────────────────── */
-static Config leer_config(const char *ruta)
-{
-    Config c = {0};
-    FILE *f = fopen(ruta, "r");
-    if (!f) { perror("config.txt"); exit(EXIT_FAILURE); }
 
-    char ln[128];
-    while (fgets(ln, sizeof ln, f)) {
-        if (ln[0]=='#' || strlen(ln)<3) continue;
-        sscanf(ln, "LIMITE_RETIRO=%d",        &c.limite_retiro);
-        sscanf(ln, "LIMITE_TRANSFERENCIA=%d", &c.limite_transferencia);
-        sscanf(ln, "ARCHIVO_LOG=%49s",         c.archivo_log);
-    }
-    fclose(f);
-    return c;
-}
 
 static void enviar_monitor(const char *txt)
 {
@@ -136,46 +90,8 @@ static int buscar_cuenta(int num)
     return -1;
 }
 
-/* ──────────  Cola de prioridad: inserción ordenada  ────────── */
-static void buffer_push(const Cuenta *cta, Prioridad pr)
-{
-    BufferPrioridad *b = &tabla->buffer;
 
-    if (b->n >= BUF_CAP)            /* cola llena: descarta la + baja */
-        return;
 
-    /* insertamos al final y hacemos “up-heap” para mantener orden */
-    int i = b->n++;
-    while (i > 0 && b->ops[i-1].prio < pr) {
-        b->ops[i] = b->ops[i-1];
-        --i;
-    }
-    b->ops[i].prio     = pr;
-    b->ops[i].snapshot = *cta;
-}
-
-/* ──────────  Logging protegido  ────────── */
-static void log_transaccion(const char *linea)
-{
-    char ruta[160];
-    snprintf(ruta, sizeof ruta,
-             "transacciones/%d/transacciones.log", cuenta_sesion);
-
-    sem_wait(sem_log);
-
-    FILE *lf = fopen(ruta, "a");
-    if (lf) {
-        char ts[32];
-        time_t t = time(NULL);
-        strftime(ts, sizeof ts, "[%Y-%m-%d %H:%M:%S]", localtime(&t));
-        fprintf(lf, "%s %s\n", ts, linea);
-        fclose(lf);
-    } else {
-        perror("fopen log");
-    }
-
-    sem_post(sem_log);
-}
 
 /* ───────────────────────────────────────────── */
 /*            OPERACIONES BANCARIAS              */
@@ -187,14 +103,13 @@ static void deposito(float monto)
     int idx = buscar_cuenta(cuenta_sesion);
     tabla->cuentas[idx].saldo += monto;
 
-    Cuenta copia = tabla->cuentas[idx];
-    buffer_push(&copia, P_MEDIA);      /* depósitos = prioridad media */
+    buffer_push(&tabla->buffer, &tabla->cuentas[idx], P_ALTA);
 
     pthread_mutex_unlock(mtx);
 
     char buf[TAM_MAX];
     snprintf(buf, sizeof buf, "Depósito: +%.2f", monto);
-    log_transaccion(buf);
+    log_transaccion_individual(cuenta_sesion, buf);
 
     snprintf(buf, sizeof buf, "DEPOSITO %d %.2f", cuenta_sesion, monto);
     enviar_monitor(buf);
@@ -208,14 +123,14 @@ static void retiro(float monto)
     if (tabla->cuentas[idx].saldo >= monto) {
         tabla->cuentas[idx].saldo -= monto;
 
-        Cuenta copia = tabla->cuentas[idx];
-        buffer_push(&copia, P_ALTA);   /* retiros = prioridad alta */
+        buffer_push(&tabla->buffer, &tabla->cuentas[idx], P_ALTA);
 
         pthread_mutex_unlock(mtx);
 
         char buf[TAM_MAX];
         snprintf(buf, sizeof buf, "Retiro: -%.2f", monto);
-        log_transaccion(buf);
+        log_transaccion_individual(cuenta_sesion, buf);
+
 
         snprintf(buf, sizeof buf, "RETIRO %d %.2f", cuenta_sesion, monto);
         enviar_monitor(buf);
@@ -238,14 +153,16 @@ static void transferencia(int destino, float monto)
         tabla->cuentas[idx_o].saldo -= monto;
         tabla->cuentas[idx_d].saldo += monto;
 
-        buffer_push(&tabla->cuentas[idx_o], P_ALTA);
-        buffer_push(&tabla->cuentas[idx_d], P_ALTA);
+        buffer_push(&tabla->buffer, &tabla->cuentas[idx_o], P_ALTA);
+        buffer_push(&tabla->buffer, &tabla->cuentas[idx_d], P_ALTA);
+
 
         pthread_mutex_unlock(mtx);
 
         char buf[TAM_MAX];
         snprintf(buf, sizeof buf, "Transferencia a %d: -%.2f", destino, monto);
-        log_transaccion(buf);
+        log_transaccion_individual(cuenta_sesion, buf);
+
 
         snprintf(buf, sizeof buf, "TRANSFERENCIA %d %d %.2f",
                  cuenta_sesion, destino, monto);
@@ -262,7 +179,8 @@ static void consultar_saldo(void)
     int idx = buscar_cuenta(cuenta_sesion);
     float s = tabla->cuentas[idx].saldo;
 
-    buffer_push(&tabla->cuentas[idx], P_MEDIA);  /* lectura -> prio media */
+   buffer_push(&tabla->buffer, &tabla->cuentas[idx], P_ALTA);
+
 
     pthread_mutex_unlock(mtx);
 
@@ -321,12 +239,12 @@ static void menu_operaciones(void)
 /* ───────────────────────────────────────────── */
 int main(int argc,char *argv[])
 {
+
     if (argc<2){ fprintf(stderr,"Uso: %s <shm_id>\n",argv[0]); exit(EXIT_FAILURE); }
     int shm_id = atoi(argv[1]);
 
     /* 1. Conectar a la SHM */
-    tabla = shmat(shm_id,NULL,0);
-    if (tabla==(void*)-1){ perror("shmat"); exit(EXIT_FAILURE); }
+    tabla = adjuntar_shm(shm_id);
     mtx = &tabla->mutex;
 
     cfg = leer_config("config.txt");
@@ -366,6 +284,6 @@ int main(int argc,char *argv[])
 
     /* 5. Limpieza */
     sem_close(sem_log);
-    shmdt(tabla);
+    liberar_shm(tabla, -1);  // -1 indica que no liberamos shm_id (lo hace banco)
     return 0;
 }

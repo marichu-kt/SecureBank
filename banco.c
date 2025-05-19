@@ -39,108 +39,13 @@
 #include <signal.h>
 #include <pthread.h>
 
+#include "utils.h"
+
+
 #define MAX_PROCESOS  100
 #define BUF_CAP       64                 /* capacidad de la cola */
 
-                /*────────── 1.  Estructuras en la SHM ──────────*/
-typedef struct {
-    int   numero_cuenta;
-    char  titular[50];
-    float saldo;
-    int   bloqueado;                     /* 1 = bloqueada -- 0 = activa */
-} Cuenta;
 
-/* prioridad de la operación (extra parte 4) */
-typedef enum { P_BAJA = 0, P_MEDIA = 1, P_ALTA = 2 } Prioridad;
-
-typedef struct {
-    Prioridad prio;
-    Cuenta    snapshot;                  /* copia de la cuenta tras la op. */
-} Operacion;
-
-/* cola con orden de prioridad (productores: usuarios, consumidor: hilo IO) */
-typedef struct {
-    Operacion ops[BUF_CAP];
-    int       n;                         /* elementos presentes (0..BUF_CAP) */
-} BufferPrioridad;
-
-typedef struct {
-    Cuenta          cuentas[100];
-    int             num_cuentas;
-    pthread_mutex_t mutex;               /* protege la tabla y el buffer */
-    BufferPrioridad buffer;              /* NUEVO: cola de prioridad     */
-} TablaCuentas;
-
-                /*────────── 2.  Config (config.txt) ──────────*/
-typedef struct {
-    int  limite_retiro;
-    int  limite_transferencia;
-    int  umbral_retiros;
-    int  umbral_transferencias;
-    int  num_hilos;
-    char archivo_cuentas[50];
-    char archivo_log[50];
-} Config;
-
-static Config leer_config(const char *ruta)
-{
-    Config c = {0};
-    FILE *f = fopen(ruta, "r");
-    if (!f) { perror("config.txt"); exit(EXIT_FAILURE); }
-
-    char ln[128];
-    while (fgets(ln, sizeof ln, f)) {
-        if (ln[0]=='#' || strlen(ln)<3) continue;
-        sscanf(ln, "LIMITE_RETIRO=%d",           &c.limite_retiro);
-        sscanf(ln, "LIMITE_TRANSFERENCIA=%d",    &c.limite_transferencia);
-        sscanf(ln, "UMBRAL_RETIROS=%d",          &c.umbral_retiros);
-        sscanf(ln, "UMBRAL_TRANSFERENCIAS=%d",   &c.umbral_transferencias);
-        sscanf(ln, "NUM_HILOS=%d",               &c.num_hilos);
-        sscanf(ln, "ARCHIVO_CUENTAS=%49s",        c.archivo_cuentas);
-        sscanf(ln, "ARCHIVO_LOG=%49s",            c.archivo_log);
-    }
-    fclose(f);
-    return c;
-}
-
-                /*────────── 3.  Hilo consumidor  ──────────*/
-static void *gestionar_entrada_salida(void *arg)
-{
-    TablaCuentas      *t    = arg;
-    const char *path        = getenv("SECUREBANK_FILE");    /* puesto por main */
-    struct timespec pausa   = {0, 20000000L};               /* 20 ms */
-
-    for (;;) {
-        pthread_mutex_lock(&t->mutex);
-        if (t->buffer.n == 0) {                 /* cola vacía → dormir un poco */
-            pthread_mutex_unlock(&t->mutex);
-            nanosleep(&pausa, NULL);
-            continue;
-        }
-        /* sacar la operación de mayor prioridad (ya está ordenada) */
-        Operacion op = t->buffer.ops[0];
-        memmove(&t->buffer.ops[0], &t->buffer.ops[1],
-                (t->buffer.n - 1) * sizeof(Operacion));
-        --t->buffer.n;
-        pthread_mutex_unlock(&t->mutex);
-
-        /* localizar la cuenta y sincronizar sólo esa entrada */
-        int idx = -1;
-        for (int i = 0; i < t->num_cuentas; ++i)
-            if (t->cuentas[i].numero_cuenta == op.snapshot.numero_cuenta) {
-                idx = i; break;
-            }
-        if (idx == -1) continue;               /* imposible pero seguro */
-
-        FILE *f = fopen(path, "rb+");
-        if (!f) { perror("cuentas.dat (hilo IO)"); continue; }
-        fseek(f, idx * sizeof(Cuenta), SEEK_SET);
-        fwrite(&op.snapshot, sizeof(Cuenta), 1, f);
-        fclose(f);
-    }
-    /* nunca retorna */
-    return NULL;
-}
 
                 /*────────── 4.  Programa principal  ──────────*/
 int main(void)
@@ -149,25 +54,14 @@ int main(void)
     Config cfg = leer_config("config.txt");
     setenv("SECUREBANK_FILE", cfg.archivo_cuentas, 1);   /* visible al hilo */
 
-    /* 4.2 crear SHM */
-    int shm_id = shmget(IPC_PRIVATE, sizeof(TablaCuentas), IPC_CREAT | 0666);
-    if (shm_id == -1) { perror("shmget"); exit(EXIT_FAILURE); }
+    int shm_id = crear_shm();
+    TablaCuentas *tabla = adjuntar_shm(shm_id);
 
-    TablaCuentas *tabla = shmat(shm_id, NULL, 0);
-    if (tabla == (void*)-1) { perror("shmat"); exit(EXIT_FAILURE); }
 
-    /* 4.3 cargar cuentas desde disco */
-    FILE *fc = fopen(cfg.archivo_cuentas, "rb");
-    if (!fc) { perror("cuentas.dat"); exit(EXIT_FAILURE); }
-    tabla->num_cuentas = fread(tabla->cuentas, sizeof(Cuenta), 100, fc);
-    fclose(fc);
+    tabla->num_cuentas = cargar_cuentas(cfg.archivo_cuentas, tabla->cuentas);
 
-    /* mutex compartido */
-    pthread_mutexattr_t a;
-    pthread_mutexattr_init(&a);
-    pthread_mutexattr_setpshared(&a, PTHREAD_PROCESS_SHARED);
-    pthread_mutex_init(&tabla->mutex, &a);
-    pthread_mutexattr_destroy(&a);
+    inicializar_mutex_proceso_compartido(&tabla->mutex);
+
 
     /* buffer prioridad vacío */
     tabla->buffer.n = 0;
@@ -183,8 +77,7 @@ int main(void)
     int   n = 0;
 
     if ((pids[n] = fork()) == 0) {             /* monitor */
-        execlp("gnome-terminal","gnome-terminal","--","bash","-c",
-               "./monitor", (char*)NULL);
+        execlp("gnome-terminal","gnome-terminal","--","bash","-c","./monitor", (char*)NULL);
         perror("monitor"); _exit(EXIT_FAILURE);
     }
     ++n;
@@ -194,8 +87,7 @@ int main(void)
         if ((pids[n] = fork()) == 0) {
             char cmd[64];
             snprintf(cmd, sizeof cmd, "./usuario %d", shm_id);
-            execlp("gnome-terminal","gnome-terminal","--","bash","-c",
-                   cmd,(char*)NULL);
+            execlp("gnome-terminal","gnome-terminal","--","bash","-c",cmd,(char*)NULL);
             perror("usuario"); _exit(EXIT_FAILURE);
         }
         ++n;
@@ -211,16 +103,12 @@ int main(void)
     pthread_cancel(hilo_io);
     pthread_join(hilo_io, NULL);
 
-    /* volcamos toda la tabla antes de salir */
-    fc = fopen(cfg.archivo_cuentas, "wb");
-    if (fc) {
-        fwrite(tabla->cuentas, sizeof(Cuenta), tabla->num_cuentas, fc);
-        fclose(fc);
-    }
+    volcar_cuentas(cfg.archivo_cuentas, tabla->cuentas, tabla->num_cuentas);
 
-    pthread_mutex_destroy(&tabla->mutex);
-    shmdt(tabla);
-    shmctl(shm_id, IPC_RMID, NULL);
+
+    destruir_mutex(&tabla->mutex);
+    liberar_shm(tabla, shm_id);
+
 
     puts("Sistema cerrado y recursos liberados.");
     return 0;
